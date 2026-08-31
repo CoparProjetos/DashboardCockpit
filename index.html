@@ -1717,7 +1717,7 @@ var ROBOS = [
        Usado só quando um dia é escolhido no calendário — ver buscarStatusPushRemuneradoNoDia. */
     colunaRotina:        "rotina",
     colunaRotinaSucesso: "rotina_sucesso",
-    nome:         "Push Remunerado",
+    nome:         "Push Conselhos",
     link:         "https://pushremunerados.vercel.app/",
   },
 
@@ -1942,7 +1942,7 @@ async function buscarColunaDoDia(cfg, coluna, dataISO){
   } catch(e){ console.error("Erro ao buscar " + coluna + ":", e); return null; }
 }
 
-/* caso especial: SÓ o Push Remunerado grava 2 linhas por dia (colunaRotina = "manha" ou
+/* caso especial: SÓ o Push Conselhos grava 2 linhas por dia (colunaRotina = "manha" ou
    "noite"), e essa checagem SÓ é usada quando um dia é escolhido no calendário (não ao
    vivo). O dia só conta como certo se as DUAS rotinas existirem e as DUAS tiverem dado
    certo (colunaRotinaSucesso = true); se qualquer uma faltar ou for false, é erro. */
@@ -1963,7 +1963,7 @@ async function buscarStatusPushRemuneradoNoDia(cfg, dataISO){
     var noiteOk = !!(noite && noite[cfg.colunaRotinaSucesso] === true);
 
     return (manhaOk && noiteOk) ? 'ok' : 'erro';
-  } catch(e){ console.error("Erro ao buscar rotina do Push Remunerado:", e); return null; }
+  } catch(e){ console.error("Erro ao buscar rotina do Push Conselhos:", e); return null; }
 }
 
 /* normaliza a coluna "linhas" (array JSON de representações encontradas) pra sempre virar um
@@ -1989,7 +1989,7 @@ async function atualizarEstadoDoPainel(dataISO, agoraParaModos, diaEscolhido){
       continue;
     }
 
-    // caso especial: só o Push Remunerado (robo3/i===2), só quando um dia é escolhido no
+    // caso especial: só o Push Conselhos (robo3/i===2), só quando um dia é escolhido no
     // calendário — depende das DUAS rotinas (manhã e noite) daquele dia, não de 1 linha só
     // (ver buscarStatusPushRemuneradoNoDia, logo acima). Ao vivo continua no caminho normal.
     if (i === 2 && diaEscolhido && ROBOS[i].colunaRotina){
