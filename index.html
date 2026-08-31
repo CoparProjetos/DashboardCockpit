@@ -2,8 +2,17 @@
 <html lang="pt-BR">
 <head>
 <meta charset="UTF-8">
-<title>Sala dos Robôs</title>
+<title>Cockpit</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@700;900&display=swap" rel="stylesheet">
 <style>
+  /* A sala 3D em si (o <canvas>) não usa nada daqui — é tudo desenhado com
+     THREE.js/WebGL, ver o <script> no fim do arquivo. Este CSS estiliza só
+     as camadas de HTML por CIMA do canvas: legenda, tela de carregamento,
+     a barra "AO VIVO"/escolher dia, o balão de aniversário, o tooltip do
+     holograma, e o botão+modal de "ler representações". Cada bloco abaixo
+     é #id de um desses elementos — procure o mesmo #id no <body>. */
   html, body { margin:0; padding:0; width:100%; height:100%; background:#0a0c10; overflow:hidden; font-family:-apple-system,'Segoe UI',Roboto,sans-serif; }
   #wrap { position:relative; width:100%; height:100vh; }
   canvas { display:block; width:100%; height:100%; }
@@ -92,14 +101,119 @@
   #holoTooltip .hpRawRow .hrVal { font-weight:bold; color:#eaf6ff; max-width:150px; text-align:right; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 
   @keyframes htBlink { 0%,100%{opacity:1;} 50%{opacity:.25;} }
+
+  /* minimal top bar: switch between AO VIVO and a chosen day (always read at 12:00 of that day) */
+  #dayBar {
+    position:absolute; top:14px; left:50%; transform:translateX(-50%);
+    z-index:6; display:flex; align-items:center; gap:10px;
+    background:rgba(8,12,20,0.55); backdrop-filter:blur(8px); -webkit-backdrop-filter:blur(8px);
+    border:1px solid rgba(140,220,255,0.18); border-radius:20px;
+    padding:6px 10px 6px 14px; font-family:monospace; font-size:11px; letter-spacing:1px;
+    color:rgba(200,230,255,0.85); text-transform:uppercase;
+    box-shadow:0 4px 18px rgba(0,0,0,0.35);
+  }
+  #dayBar .dbDot { width:6px; height:6px; border-radius:50%; background:#7ee081; box-shadow:0 0 6px #7ee081; transition:background .3s,box-shadow .3s; }
+  #dayBar.hist .dbDot { background:#ff8a3d; box-shadow:0 0 6px #ff8a3d; }
+  #dayBar button { all:unset; cursor:pointer; padding:4px 10px; border-radius:12px; font:inherit; letter-spacing:1px; color:rgba(200,230,255,0.6); transition:background .2s,color .2s; }
+  #dayBar button.active { background:rgba(140,220,255,0.14); color:#eaf6ff; }
+  #dayBar input[type=date] {
+    background:rgba(255,255,255,0.05); border:1px solid rgba(140,220,255,0.22); border-radius:10px;
+    color:#eaf6ff; font:11px monospace; letter-spacing:0.5px; padding:4px 8px; color-scheme:dark; text-transform:uppercase;
+  }
+  #dayBar .dbSep { width:1px; height:14px; background:rgba(140,220,255,0.18); }
+
+  /* easter egg: "modo aniversário" banner — 2x bebedouro + 1x impressora */
+  #birthdayBanner {
+    position:absolute; top:70px; left:50%; transform:translateX(-50%) scale(0.85);
+    z-index:8; pointer-events:none; opacity:0; transition:opacity .3s ease, transform .3s ease;
+    font-size:22px; font-weight:900; letter-spacing:2px; white-space:nowrap;
+    background:linear-gradient(90deg,#ff5c8a,#ffd23f,#5cf28c,#5cc8ff,#c05cff,#ff5c8a);
+    background-size:300% 100%; -webkit-background-clip:text; background-clip:text; color:transparent;
+    animation:bdayShift 1.2s linear infinite;
+    text-shadow:0 0 18px rgba(255,255,255,0.25);
+  }
+  #birthdayBanner.show { opacity:1; transform:translateX(-50%) scale(1); }
+  @keyframes bdayShift { to { background-position:300% 0; } }
+
+  /* "LER REPRESENTAÇÕES" button — pinned to the dashboard's own row 0 in 3D, reprojected
+     to screen space every frame (see updateLerRepresentacoesBtn), same trick as #holoTooltip. */
+  #btnLerRepresentacoes {
+    position:absolute; top:0; left:0; z-index:6; transform:translate(0,-50%);
+    display:none; align-items:center; gap:6px; cursor:pointer;
+    background:rgba(140,220,255,0.12); border:1px solid rgba(140,220,255,0.45); border-radius:14px;
+    padding:4px 10px; font-family:monospace; font-size:9px; font-weight:bold; letter-spacing:0.5px;
+    color:#eaf6ff; text-transform:uppercase; white-space:nowrap;
+    box-shadow:0 0 10px rgba(140,220,255,0.15); transition:background .15s, box-shadow .15s;
+  }
+  #btnLerRepresentacoes:hover { background:rgba(140,220,255,0.24); box-shadow:0 0 16px rgba(140,220,255,0.35); }
+  #btnLerRepresentacoes.visible { display:flex; }
+
+  /* modal: same glass/HUD frame language as #holoTooltip, listing the day's documents */
+  #repModal {
+    position:absolute; inset:0; z-index:9; display:none;
+    align-items:flex-start; justify-content:center; padding-top:12vh;
+    background:rgba(3,5,10,0.55); backdrop-filter:blur(3px); -webkit-backdrop-filter:blur(3px);
+  }
+  #repModal.show { display:flex; }
+  #repModal .rmFrame {
+    width:min(560px, 88vw); max-height:70vh; display:flex; flex-direction:column;
+    background:rgba(8,14,24,0.92); border:1px solid rgba(140,220,255,0.35); border-radius:14px;
+    box-shadow:0 12px 50px rgba(0,0,0,0.55), 0 0 30px rgba(89,214,255,0.12);
+    font-family:monospace; color:#eaf6ff;
+  }
+  #repModal .rmHead {
+    display:flex; align-items:center; justify-content:space-between;
+    padding:14px 18px; border-bottom:1px solid rgba(140,220,255,0.2);
+  }
+  #repModal .rmTitle { font-size:13px; font-weight:bold; letter-spacing:1.5px; color:#8fe3ff; }
+  #repModal .rmClose {
+    all:unset; cursor:pointer; color:rgba(200,230,255,0.7); font-size:16px; line-height:1;
+    padding:4px 8px; border-radius:8px;
+  }
+  #repModal .rmClose:hover { background:rgba(140,220,255,0.15); color:#fff; }
+  #repModal .rmBody { overflow-y:auto; padding:8px 10px; }
+  #repModal .rmEmpty { padding:24px 18px; text-align:center; color:rgba(200,230,255,0.55); font-size:12px; letter-spacing:0.5px; }
+  #repModal .rmRow {
+    display:block; padding:11px 12px; margin:4px 0; border-radius:9px;
+    border:1px solid rgba(140,220,255,0.14); background:rgba(140,220,255,0.04);
+    color:#dff4ff; text-decoration:none; transition:background .15s, border-color .15s;
+  }
+  #repModal a.rmRow:hover { background:rgba(140,220,255,0.12); border-color:rgba(140,220,255,0.4); }
+  #repModal .rmRowTitle { font-size:12.5px; line-height:1.4; }
+  #repModal a.rmRow .rmRowTitle { color:#8fe3ff; text-decoration:underline; text-underline-offset:2px; }
+  #repModal .rmRowMeta { margin-top:4px; font-size:10px; letter-spacing:0.5px; color:rgba(200,230,255,0.55); }
 </style>
 </head>
 <body>
+<!-- #c é o <canvas> onde o three.js desenha a sala 3D inteira (ver o
+     <script> no fim do arquivo). Todo o resto aqui é HTML sobreposto por
+     cima dele (overlays), estilizado no <style> acima e ligado a
+     funções/listeners no JS — cada #id abaixo tem seu bloco de CSS
+     correspondente lá em cima. -->
 <div id="wrap">
   <canvas id="c"></canvas>
   <div id="vignette"></div>
-  <div id="caption">Escritório <b>Setor 4</b> — visão do supervisor</div>
+  <div id="caption">Escritório <b>DEORG SEORI SG</b> — visão do gestor</div>
   <div id="loading"><div class="spin"></div><div>carregando a sala</div></div>
+  <div id="dayBar">
+    <span class="dbDot" id="dbDot"></span>
+    <button id="dbBtnAoVivo" class="active">AO VIVO</button>
+    <span class="dbSep"></span>
+    <input type="date" id="dbDayInput">
+  </div>
+  <div id="birthdayBanner">🎉 FELIZ ANIVERSÁRIO!!! 🎉</div>
+
+  <button id="btnLerRepresentacoes">▸ Ler representações</button>
+  <div id="repModal">
+    <div class="rmFrame">
+      <div class="rmHead">
+        <span class="rmTitle">REPRESENTAÇÕES — <span id="rmDate"></span></span>
+        <button class="rmClose" id="rmCloseBtn">✕</button>
+      </div>
+      <div class="rmBody" id="rmBody"></div>
+    </div>
+  </div>
+
   <div id="holoTooltip">
     <div class="hpConnDot"></div>
     <div class="hpConnector"></div>
@@ -109,21 +223,21 @@
       <div class="hpCorner bl"></div>
       <div class="hpCorner br"></div>
       <div class="hpTop">
-        <span class="hpTitle">ORG AGENTS</span>
-        <span class="hpLive"><i></i>LIVE</span>
+        <span class="hpTitle">AGENTES</span>
+        <span class="hpLive"><i></i>AO VIVO</span>
       </div>
-      <div class="hpSub">AUTONOMOUS WORKFORCE MONITOR</div>
+      <div class="hpSub">MONITOR DE FORÇA DE TRABALHO AUTÔNOMA</div>
 
       <div class="hpRow">
-        <div class="hpRowTop"><span class="hpDot active"></span>ACTIVE<span class="htVal" id="htActiveVal">0</span></div>
+        <div class="hpRowTop"><span class="hpDot active"></span>ATIVOS<span class="htVal" id="htActiveVal">0</span></div>
         <div class="hpBarTrack"><div class="hpBarFill active" id="htActiveBar"></div></div>
       </div>
       <div class="hpRow">
-        <div class="hpRowTop"><span class="hpDot error"></span>ERROR<span class="htVal" id="htErrorVal">0</span></div>
+        <div class="hpRowTop"><span class="hpDot error"></span>ERRO<span class="htVal" id="htErrorVal">0</span></div>
         <div class="hpBarTrack"><div class="hpBarFill error" id="htErrorBar"></div></div>
       </div>
       <div class="hpRow">
-        <div class="hpRowTop"><span class="hpDot sleep"></span>SLEEPING<span class="htVal" id="htSleepVal">0</span></div>
+        <div class="hpRowTop"><span class="hpDot sleep"></span>DORMINDO<span class="htVal" id="htSleepVal">0</span></div>
         <div class="hpBarTrack"><div class="hpBarFill sleep" id="htSleepBar"></div></div>
       </div>
       <div class="hpRawList" id="htRawList"></div>
@@ -138,6 +252,44 @@
 (function(){
 "use strict";
 
+/* ════════════════════════════════════════════════════════════════════════
+   MAPA DESTE ARQUIVO — leia isto primeiro
+   ════════════════════════════════════════════════════════════════════════
+   Tudo (HTML, CSS e JS) fica num único index.html de propósito — é a forma
+   mais simples de publicar/hospedar isso sem build step. O <script> abaixo
+   está dividido nas seções abaixo, NA ORDEM em que aparecem no arquivo.
+   Cada uma começa com um banner igual a este (bem visível, fácil de achar
+   com Ctrl+F procurando por "SEÇÃO"), então dá pra pular direto pro que
+   importa sem ler o arquivo inteiro.
+
+     SEÇÃO 1  — Renderer, cena e câmera (setup básico do three.js)
+     SEÇÃO 2  — Texturas e materiais reaproveitados por várias peças
+     SEÇÃO 3  — Casco da sala (chão, teto, paredes) + tela do painel na parede
+     SEÇÃO 4  — Painel central 3D (o "Dashboard" desenhado na parede)
+     SEÇÃO 5  — Resto da sala: janelas, luzes de teto, luz ambiente, poeira
+     SEÇÃO 6  — Fábricas de geometria: xícara, mesa, cadeira, robô
+     SEÇÃO 7  — Móveis/decoração: canto do café, bebedouro, sofá, arquivo,
+                impressora, armário, triturador, plataforma de LED
+     SEÇÃO 8  — ROBOS[] (config de conexão com cada Supabase) + montagem
+                das 4 mesas (desk + cadeira + robô + hitboxes de clique)
+     SEÇÃO 9  — Busca no Supabase, decide o modo de cada robô, e a barra
+                "AO VIVO" / escolher um dia no topo da tela
+     SEÇÃO 10 — Decoração pequena: plantas, lixeiras
+     SEÇÃO 11 — Centro da sala: bolo de aniversário + pilar holográfico
+     SEÇÃO 12 — Interações de mouse: hover do holograma, botão/modal
+                "ler representações", clique nos robôs (abre o link),
+                easter egg do "modo aniversário"
+     SEÇÃO 13 — Câmera fixa (visão do "gestor")
+     SEÇÃO 14 — Animação dos robôs: IK dos braços, impressora/triturador,
+                os 4 modos de comportamento, fumaça de erro, dança
+     SEÇÃO 15 — Loop principal (animate()) — roda a cada frame
+     SEÇÃO 16 — Inicialização final (some com a tela de carregamento, resize)
+
+   Overview de mais alto nível (o que é cada robô, como plugar um Supabase
+   novo, como funcionam os "modos") está no README.md, na raiz do projeto.
+   ════════════════════════════════════════════════════════════════════════ */
+
+/* ── SEÇÃO 1 — Renderer, cena e câmera ─────────────────────────────────── */
 var canvas = document.getElementById('c');
 var renderer = new THREE.WebGLRenderer({ canvas:canvas, antialias:true, powerPreference:'high-performance' });
 renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
@@ -152,12 +304,15 @@ var scene = new THREE.Scene();
 scene.background = new THREE.Color(0x05070a);
 scene.fog = new THREE.Fog(0x05070a, 14, 34);
 
+var easterEggClickTargets = []; /* invisible hitboxes on the water station + printer — clique 2x bebedouro + 1x impressora liga o modo aniversário */
+
 var camera = new THREE.PerspectiveCamera(50, window.innerWidth/window.innerHeight, 0.1, 100);
 var CAM_BASE_POS = [0, 3.15, 7.9];
 var CAM_BASE_LOOK = [0, 1.2, -0.5];
 camera.position.set(CAM_BASE_POS[0], CAM_BASE_POS[1], CAM_BASE_POS[2]);
 camera.lookAt(CAM_BASE_LOOK[0], CAM_BASE_LOOK[1], CAM_BASE_LOOK[2]);
 
+/* ── SEÇÃO 2 — Texturas e materiais reaproveitados por várias peças ────── */
 /* ---------- helpers ---------- */
 function makeCanvasTexture(draw, w, h){
   var cv = document.createElement('canvas'); cv.width = w||256; cv.height = h||256;
@@ -211,6 +366,17 @@ var zzzTex = makeCanvasTexture(function(ctx,w,h){
   ctx.save(); ctx.translate(w*0.53,h*0.52); ctx.rotate(-0.2); ctx.font = 'bold 44px sans-serif'; ctx.fillText('z',0,0); ctx.restore();
   ctx.save(); ctx.translate(w*0.8,h*0.22); ctx.rotate(-0.2); ctx.font = 'bold 58px sans-serif'; ctx.fillText('z',0,0); ctx.restore();
 }, 160, 160);
+
+/* soft round smoke puff, used by the 'errormode' mode's monitor smoke plume */
+var smokeTex = makeCanvasTexture(function(ctx,w,h){
+  var g = ctx.createRadialGradient(w/2,h/2,0, w/2,h/2,w/2);
+  g.addColorStop(0,   'rgba(60,60,66,0.95)');
+  g.addColorStop(0.4, 'rgba(50,50,56,0.7)');
+  g.addColorStop(0.75,'rgba(40,40,46,0.3)');
+  g.addColorStop(1,   'rgba(40,40,46,0)');
+  ctx.fillStyle = g;
+  ctx.fillRect(0,0,w,h);
+}, 128, 128);
 
 /* small, discreet physical name tag above each robot's head — same tech/HUD styling as the hologram hover card */
 function roundRectPath(ctx,x,y,w,h,r){
@@ -300,6 +466,7 @@ var matCoffee = new THREE.MeshStandardMaterial({ color:0x3b2417, roughness:0.4, 
 var matSpill = new THREE.MeshStandardMaterial({ color:0x2a1810, roughness:0.2, metalness:0.05, transparent:true, opacity:0.85 });
 var matPlatformRim = new THREE.MeshStandardMaterial({ color:0xffffff, emissive:0xffffff, emissiveIntensity:1.8, roughness:0.4 });
 
+/* ── SEÇÃO 3 — Casco da sala (chão, teto, paredes) + tela do painel ────── */
 /* ---------- room ---------- */
 var ROOM_W = 15, ROOM_D_BACK = 6.4, ROOM_H = 5.2;
 var room = new THREE.Group();
@@ -338,6 +505,13 @@ var winGlow = new THREE.PointLight(0x59c8ff, 2.4, 9, 2);
 winGlow.position.set(0, 3, -ROOM_D_BACK + 1.6);
 room.add(winGlow);
 
+/* ── SEÇÃO 4 — Painel central 3D (o "Dashboard" desenhado na parede) ───
+   Não é HTML: é um <canvas> 2D redesenhado em JS (drawDashboard, chamada
+   por updateDashboard a cada poucos frames) e aplicado como textura numa
+   malha plana (windowMesh, criada na Seção 3). Pra adicionar uma métrica
+   nova no painel, procure o array `stats` dentro de drawDashboard — cada
+   entrada vira uma linha automaticamente (ver drawStatRow). ─────────── */
+
 /* single source of truth for agent status counts — used by the dashboard and the hologram hover tooltip */
 function computeAgentCounts(){
   var active = robots.filter(function(r){ return r.mode==='workingmode' || r.mode==='idlemode'; }).length;
@@ -346,89 +520,179 @@ function computeAgentCounts(){
   return { active:active, error:error, sleep:sleep, total:robots.length };
 }
 
+/* HUD-style corner brackets framing the whole panel, tech/sci-fi readout look */
+function drawCornerBrackets(ctx, w, h, glow){
+  var m = 10, len = 24;
+  ctx.strokeStyle = 'rgba(140,220,255,' + (0.45+0.25*glow).toFixed(2) + ')';
+  ctx.lineWidth = 2;
+  function bracket(x, y, dx, dy){
+    ctx.beginPath();
+    ctx.moveTo(x, y + dy*len);
+    ctx.lineTo(x, y);
+    ctx.lineTo(x + dx*len, y);
+    ctx.stroke();
+  }
+  bracket(m, m, 1, 1);
+  bracket(w-m, m, -1, 1);
+  bracket(m, h-m, 1, -1);
+  bracket(w-m, h-m, -1, -1);
+}
+
+/* pixel rect (in dashTex canvas space) of each stat row, filled in by drawDashboard every
+   redraw — used to plant the "LER REPRESENTAÇÕES" HTML button exactly over row 0, projected
+   from the dashboard's 3D plane to screen space each frame (see updateLerRepresentacoesBtn). */
+var dashboardRowRects = [];
+
+/* one row of the dashboard: a rounded, glass-like card with a colored accent bar and a small
+   tech "▸" marker on the left, a label, and a glowing Orbitron number a FIXED distance after
+   the label ends — however long the label is. Built as its own function so new stats later
+   are just another entry in the `stats` array below — not a redesign each time. */
+function drawStatRow(ctx, x, y, w, h, label, value, color, t){
+  var r = 12;
+
+  /* glass card body */
+  var grad = ctx.createLinearGradient(x, y, x, y+h);
+  grad.addColorStop(0, 'rgba(255,255,255,0.055)');
+  grad.addColorStop(1, 'rgba(255,255,255,0.015)');
+  roundRectPath(ctx, x, y, w, h, r);
+  ctx.fillStyle = grad;
+  ctx.fill();
+
+  /* colored accent bar, clipped to the card so its corners match the rounding */
+  ctx.save();
+  roundRectPath(ctx, x, y, w, h, r);
+  ctx.clip();
+  ctx.fillStyle = color;
+  ctx.globalAlpha = 0.9;
+  ctx.fillRect(x, y, 4, h);
+  ctx.restore();
+
+  /* border, brighter and glowing a touch */
+  roundRectPath(ctx, x+0.5, y+0.5, w-1, h-1, r);
+  ctx.strokeStyle = 'rgba(140,220,255,0.28)';
+  ctx.lineWidth = 1;
+  ctx.stroke();
+
+  ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+
+  /* small tech marker before the label */
+  var markerX = x + 22;
+  ctx.fillStyle = color;
+  ctx.beginPath();
+  ctx.moveTo(markerX, y+h/2-4);
+  ctx.lineTo(markerX+7, y+h/2);
+  ctx.lineTo(markerX, y+h/2+4);
+  ctx.closePath();
+  ctx.fill();
+
+  var labelX = markerX + 16;
+  ctx.fillStyle = 'rgba(200,232,255,0.85)';
+  ctx.font = '18px monospace';
+  ctx.fillText(label, labelX, y+h/2+1);
+  var labelW = ctx.measureText(label).width;
+
+  var numText = String(value);
+  ctx.font = '900 58px Orbitron, monospace';
+  var GAP_LABEL_NUM = 28; /* distância fixa entre o fim da frase e o número, não muda com o tamanho do texto */
+  var numX = labelX + labelW + GAP_LABEL_NUM;
+  var pulse = 0.5 + 0.5*Math.sin(t*2.4);
+
+  ctx.save();
+  ctx.shadowColor = color;
+  ctx.shadowBlur = 13 + pulse*9; /* glow leve, sem ofuscar a leitura do número */
+  ctx.fillStyle = color;
+  ctx.fillText(numText, numX, y+h/2+2);
+  ctx.shadowBlur = 0;
+  ctx.fillText(numText, numX, y+h/2+2); /* second pass: crisp core under the glow */
+  ctx.restore();
+}
+
 function drawDashboard(ctx, w, h, t){
-  ctx.fillStyle = '#050a12';
+  /* deep gradient backdrop instead of a flat fill */
+  var bg = ctx.createLinearGradient(0, 0, 0, h);
+  bg.addColorStop(0, '#070d18');
+  bg.addColorStop(1, '#02040a');
+  ctx.fillStyle = bg;
   ctx.fillRect(0,0,w,h);
 
   /* faint tech grid */
-  ctx.strokeStyle = 'rgba(90,150,190,0.08)'; ctx.lineWidth = 1;
+  ctx.strokeStyle = 'rgba(90,150,190,0.07)'; ctx.lineWidth = 1;
   for (var gx=0; gx<w; gx+=32){ ctx.beginPath(); ctx.moveTo(gx,0); ctx.lineTo(gx,h); ctx.stroke(); }
   for (var gy=0; gy<h; gy+=28){ ctx.beginPath(); ctx.moveTo(0,gy); ctx.lineTo(w,gy); ctx.stroke(); }
 
   /* slow scanline for a "live terminal" feel */
   var scanY = (t*46) % h;
-  ctx.fillStyle = 'rgba(140,220,255,0.05)';
+  ctx.fillStyle = 'rgba(140,220,255,0.045)';
   ctx.fillRect(0, scanY, w, 3);
 
-  /* title + live indicator */
-  ctx.textBaseline = 'top'; ctx.textAlign = 'left';
-  ctx.fillStyle = '#8fe3ff'; ctx.font = 'bold 34px monospace';
-  ctx.fillText('DEORG AGENTS', 26, 18);
-  ctx.fillStyle = 'rgba(140,220,255,0.65)'; ctx.font = '13px monospace';
-  ctx.fillText('AUTONOMOUS WORKFORCE MONITOR', 26, 58);
-  var liveBlink = 0.5 + 0.5*Math.sin(t*4);
-  ctx.fillStyle = 'rgba(120,255,160,' + (0.4+0.6*liveBlink).toFixed(2) + ')';
-  ctx.beginPath(); ctx.arc(320, 30, 6, 0, Math.PI*2); ctx.fill();
-  ctx.fillStyle = 'rgba(140,255,180,0.85)'; ctx.font = '13px monospace';
-  ctx.fillText('LIVE', 334, 24);
+  var pulse = 0.5 + 0.5*Math.sin(t*2.2);
 
-  /* uptime + active-agent count (top right) */
-  var secs = Math.floor(t);
-  var hh = String(Math.floor(secs/3600)).padStart(2,'0');
-  var mm = String(Math.floor((secs%3600)/60)).padStart(2,'0');
-  var ss = String(secs%60).padStart(2,'0');
-  ctx.textAlign = 'right';
-  ctx.fillStyle = '#cfeeff'; ctx.font = '15px monospace';
-  ctx.fillText('UPTIME  ' + hh+':'+mm+':'+ss, w-26, 22);
-  var liveCounts = computeAgentCounts();
-  ctx.fillStyle = '#8fe3ff';
-  ctx.fillText('AGENTS ACTIVE  ' + liveCounts.active + '/' + robots.length, w-26, 46);
-  ctx.textAlign = 'left';
+  /* thin outer frame + HUD corner brackets */
+  ctx.strokeStyle = 'rgba(140,220,255,0.1)'; ctx.lineWidth = 1;
+  ctx.strokeRect(0.5, 0.5, w-1, h-1);
+  drawCornerBrackets(ctx, w, h, pulse);
 
-  /* three separate pie charts — one per agent status, nothing else on the panel */
-  var activeN = liveCounts.active;
-  var errorN  = liveCounts.error;
-  var sleepN  = liveCounts.sleep;
-  var total   = Math.max(1, robots.length);
-  var pieData = [
-    { label:'ACTIVE',   n:activeN, color:'#7ee081' },
-    { label:'ERROR',    n:errorN,  color:'#ff5c4d' },
-    { label:'SLEEPING', n:sleepN,  color:'#8f9dff' }
+  /* title block: flanking lines with pulsing end-dots, big letter-spaced glowing title */
+  var title = 'DASHBOARD';
+  var titleY = 38, cx = w/2;
+  ctx.font = '900 28px Orbitron, monospace';
+  if ('letterSpacing' in ctx) ctx.letterSpacing = '9px';
+  var titleW = ctx.measureText(title).width;
+
+  var lineY = titleY - 9, lineGap = 22, lineLen = 110;
+  ctx.strokeStyle = 'rgba(140,220,255,' + (0.3+0.25*pulse).toFixed(2) + ')';
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  ctx.moveTo(cx - titleW/2 - lineGap - lineLen, lineY);
+  ctx.lineTo(cx - titleW/2 - lineGap, lineY);
+  ctx.moveTo(cx + titleW/2 + lineGap, lineY);
+  ctx.lineTo(cx + titleW/2 + lineGap + lineLen, lineY);
+  ctx.stroke();
+  [cx - titleW/2 - lineGap, cx + titleW/2 + lineGap].forEach(function(dx){
+    ctx.beginPath(); ctx.arc(dx, lineY, 2.6, 0, Math.PI*2);
+    ctx.fillStyle = 'rgba(140,255,220,' + (0.55+0.45*pulse).toFixed(2) + ')';
+    ctx.fill();
+  });
+
+  ctx.textAlign = 'center'; ctx.textBaseline = 'alphabetic';
+  ctx.save();
+  ctx.shadowColor = '#7fe3ff';
+  ctx.shadowBlur = 22 + pulse*10;
+  ctx.fillStyle = '#eef9ff';
+  ctx.fillText(title, cx, titleY);
+  ctx.shadowBlur = 0;
+  ctx.fillText(title, cx, titleY); /* crisp core under the glow */
+  ctx.restore();
+  if ('letterSpacing' in ctx) ctx.letterSpacing = '0px';
+  ctx.textAlign = 'left'; ctx.textBaseline = 'top';
+
+  /* soft gradient divider under the title */
+  var divY = titleY + 16;
+  var padX = 24;
+  var divGrad = ctx.createLinearGradient(padX, 0, w-padX, 0);
+  divGrad.addColorStop(0,   'rgba(140,220,255,0)');
+  divGrad.addColorStop(0.5, 'rgba(140,220,255,0.45)');
+  divGrad.addColorStop(1,   'rgba(140,220,255,0)');
+  ctx.strokeStyle = divGrad; ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(padX, divY); ctx.lineTo(w-padX, divY); ctx.stroke();
+
+  /* stat rows: one per line of data on the panel. Add more objects here later — each
+     becomes its own row automatically, stacked top to bottom. */
+  var repN = representacoesHojeCount;
+  var repColor = repN > 0 ? '#ff8a3d' : '#28f0c0'; /* amber when there's something to look at, teal when zero */
+  var pushN = pushDiretoraCount;
+  var pushColor = pushN > 0 ? '#ff8a3d' : '#28f0c0';
+  var stats = [
+    { label:'Push Representações encontrou:', value:repN,  color:repColor },
+    { label:'Push Deorg encontrou:',       value:pushN, color:pushColor }
   ];
 
-  var areaTop=90, areaBottom=h-16, areaH=areaBottom-areaTop;
-  var pieR = Math.min(areaH*0.4, 66);
-  var colW = (w-52)/3;
-
-  pieData.forEach(function(d,i){
-    var cx = 26 + colW*i + colW/2;
-    var cy = areaTop + areaH/2;
-    var frac = d.n/total;
-
-    ctx.beginPath(); ctx.arc(cx,cy,pieR,0,Math.PI*2);
-    ctx.fillStyle = 'rgba(255,255,255,0.06)'; ctx.fill();
-
-    if (d.n > 0){
-      ctx.beginPath();
-      ctx.moveTo(cx,cy);
-      ctx.arc(cx,cy,pieR,-Math.PI/2,-Math.PI/2 + frac*Math.PI*2);
-      ctx.closePath();
-      ctx.fillStyle = d.color;
-      ctx.fill();
-    }
-
-    ctx.beginPath(); ctx.arc(cx,cy,pieR*0.56,0,Math.PI*2);
-    ctx.fillStyle = '#050a12'; ctx.fill();
-
-    ctx.textAlign = 'center';
-    ctx.fillStyle = '#eaf6ff'; ctx.font = 'bold 28px monospace';
-    ctx.fillText(String(d.n), cx, cy-16);
-    ctx.font = '11px monospace'; ctx.fillStyle = 'rgba(200,230,255,0.6)';
-    ctx.fillText('/ ' + total, cx, cy+10);
-
-    ctx.fillStyle = d.color; ctx.font = 'bold 15px monospace';
-    ctx.fillText(d.label, cx, cy+pieR+18);
-    ctx.textAlign = 'left';
+  var rowH = 64, rowGap = 14, rowY = divY + 22;
+  stats.forEach(function(s, i){
+    var rowW = w-padX*2;
+    drawStatRow(ctx, padX, rowY, rowW, rowH, s.label, s.value, s.color, t);
+    dashboardRowRects[i] = { x:padX, y:rowY, w:rowW, h:rowH };
+    rowY += rowH + rowGap;
   });
 }
 
@@ -437,6 +701,7 @@ function updateDashboard(t){
   dashTex.texture.needsUpdate = true;
 }
 
+/* ── SEÇÃO 5 — Resto da sala: janelas, luzes de teto, luz ambiente, poeira ── */
 /* floor-to-ceiling windows on the side walls: same skyline texture but darker/tinted glass,
    with vertical mullions (esquadrias) dividing it into panes */
 var winFrameMat = new THREE.MeshStandardMaterial({ color:0x0c0e12, roughness:0.6 });
@@ -516,6 +781,10 @@ scene.add(sun);
   window.__dust = pts;
 })();
 
+/* ── SEÇÃO 6 — Fábricas de geometria: xícara, mesa, cadeira, robô ───────
+   Estas funções só CRIAM a geometria (uma vez, na montagem da sala — ver
+   Seção 8). A pose de cada robô quadro a quadro é decidida depois, na
+   Seção 14 (modeWorking/modeIdle/modeSleeping/modeError/updateDanca). ── */
 /* ---------- coffee cup (saucer + body + handle) ---------- */
 function buildCup(){
   var saucer = new THREE.Mesh(new THREE.CylinderGeometry(0.11,0.1,0.014,20), matCup);
@@ -708,7 +977,13 @@ function buildRobot(accent, phase){
   return { group:g, torso:torso, headPivot:headPivot, armL:armL, armR:armR, chestLight:chestLight, phase:phase, hips:hips, zzz:zzz };
 }
 
-    /* BREAK CORNER COFFEE*/
+/* ── SEÇÃO 7 — Móveis/decoração ──────────────────────────────────────────
+   Cada peça é uma função build*(x, z, rotY) que monta a geometria e já
+   chama room.add(...) sozinha — não devolve nada pra usar depois (ao
+   contrário de buildDesk/buildRobot da Seção 6, que a Seção 8 precisa
+   guardar pra poder animar). São só cenário estático. ─────────────────── */
+
+    /* canto do café: armário + bancada + máquina de café + canecas penduradas */
   function buildBreakCorner(x,z,rotY){
   var g = new THREE.Group();
   var cab = new THREE.Mesh(
@@ -939,8 +1214,17 @@ function buildWaterStation(x,z){
   stationLight.target.position.set(x,1,z);
   g.rotation.y = -Math.PI / 3;
   room.add(stationLight); room.add(stationLight.target);
+
+  /* invisible click hitbox covering the whole station — easter egg trigger (see "modo aniversário") */
+  var hitbox = new THREE.Mesh(new THREE.CylinderGeometry(0.4,0.4,1.7,10), new THREE.MeshBasicMaterial({ transparent:true, opacity:0, depthWrite:false }));
+  hitbox.position.y = 0.85;
+  hitbox.userData.easterEgg = 'bebedouro';
+  g.add(hitbox);
+  easterEggClickTargets.push(hitbox);
+
+  return g;
 }
-buildWaterStation(6.8, -0.9);
+var waterStation = buildWaterStation(6.8, -0.9);
 
 
 /* ---------- sofa, next to the water station ---------- */
@@ -1091,8 +1375,8 @@ function buildPrinterStation(x, z, rotY){
   g.add(panel);
   var panelTex = makeCanvasTexture(function(ctx,w,h){
     ctx.fillStyle = '#07220f'; ctx.fillRect(0,0,w,h);
-    ctx.fillStyle = '#63e08a'; ctx.font = 'bold 22px monospace'; ctx.textAlign = 'center';
-    ctx.fillText('PRINTING...', w/2, h/2+7);
+    ctx.fillStyle = '#63e08a'; ctx.font = 'bold 18px monospace'; ctx.textAlign = 'center';
+    ctx.fillText('IMPRIMINDO...', w/2, h/2+7);
   }, 180,56);
   var panelMat = new THREE.MeshStandardMaterial({ map:panelTex.texture, emissiveMap:panelTex.texture, emissive:0xffffff, emissiveIntensity:0.85 });
   var panelScreen = new THREE.Mesh(new THREE.PlaneGeometry(0.15,0.05), panelMat);
@@ -1147,6 +1431,13 @@ function buildPrinterStation(x, z, rotY){
   g.position.set(x, 0, z);
   if (rotY) g.rotation.y = rotY;
   room.add(g);
+
+  /* invisible click hitbox covering cabinet + printer — easter egg trigger (see "modo aniversário") */
+  var hitbox = new THREE.Mesh(new THREE.BoxGeometry(0.8,1.3,0.7), new THREE.MeshBasicMaterial({ transparent:true, opacity:0, depthWrite:false }));
+  hitbox.position.set(0, 0.65, 0);
+  hitbox.userData.easterEgg = 'impressora';
+  g.add(hitbox);
+  easterEggClickTargets.push(hitbox);
 
   return { sheet:sheet, sheetSlotY:slotY+0.001, sheetTrayY:trayY+0.012, led:ledMat };
 }
@@ -1331,6 +1622,16 @@ function buildPlatform(x, z){
   return { PH:0, material:rimMat };
 }
 
+/* ── SEÇÃO 8 — ROBOS[] (config do Supabase de cada robô) + montagem das
+   4 mesas ───────────────────────────────────────────────────────────────
+   Nesta ordem: (1) as posições/cores das 4 estações; (2) `ROBOS[]` — a
+   "ficha de identidade" de cada robô (qual Supabase, qual tabela, qual
+   coluna — é ali que se pluga um robô novo ou se conserta um já
+   existente, tem comentário detalhado passo a passo logo acima do
+   array); (3) o modo inicial de cada robô; (4) o `positions.forEach`
+   que de fato monta desk + cadeira + robô + hitboxes de clique pra cada
+   uma das 4 estações, usando as fábricas da Seção 6 e os dados de
+   `ROBOS[]`, guardando tudo em `robots[]`/`desks[]`. ─────────────────── */
 /* ---------- assemble desks ---------- */
 var accents = [0x59d6ff, 0xff6f91, 0xffcf5c, 0x7ee081];
 var positions = [ [-3.3,-2.0], [3.3,-2.0], [-3.3,1.9], [3.3,1.9]];
@@ -1362,6 +1663,11 @@ var positions = [ [-3.3,-2.0], [3.3,-2.0], [-3.3,1.9], [3.3,1.9]];
      3. tabela         → nome da tabela       (Table Editor)
      4. colunaData     → coluna com a data    (Table Editor)
      5. colunaStatus   → coluna com o status  (Table Editor)
+     6. link           → URL do app/dashboard daquele robô — clicar no
+                          robô na cena 3D abre esse link em nova aba.
+     7. colunaLinhas   → (opcional, só o Radar Colegiados usa) coluna
+                          com o array JSON de representações do dia —
+                          a contagem aparece no painel central.
 
    Deixe em branco ("") o que ainda não tiver — o código já sabe pular
    um robô incompleto sem quebrar os outros.
@@ -1378,7 +1684,9 @@ var ROBOS = [
     tabela:       "pendencias_envio",
     colunaData:   "data",
     colunaStatus: "status",
+    colunaLinhas: "linhas",   /* coluna com o array JSON de representações encontradas no dia — usada no painel central */
     nome:         "Radar Colegiados",
+    link:         "https://radarcolegiados.vercel.app/",
   },
 
   /* ───────────────────────── ROBÔ 2 (robo2) ─────────────────────────
@@ -1390,7 +1698,9 @@ var ROBOS = [
     tabela:       "execucoes",   // <-- FALTA PREENCHER
     colunaData:   "data",   // <-- FALTA PREENCHER
     colunaStatus: "sucesso_diario",   // <-- FALTA PREENCHER
-    nome:         "Push Diretora",
+    colunaPushCount: "push_count",   /* coluna numérica do dia — usada no painel central */
+    nome:         "Push DEORG",
+    link:         "https://pushdeorg.vercel.app/",
   },
 
   /* ───────────────────────── ROBÔ 3 (robo3) ─────────────────────────
@@ -1402,7 +1712,13 @@ var ROBOS = [
     tabela:       "execucao",   // <-- FALTA PREENCHER
     colunaData:   "data",   // <-- FALTA PREENCHER
     colunaStatus: "sucesso_diario",   // <-- FALTA PREENCHER
+    /* SÓ este robô escreve 2 linhas por dia (uma de manhã, outra à noite) — colunaRotina
+       diz qual é qual, colunaRotinaSucesso diz se aquela rotina deu certo (true/false).
+       Usado só quando um dia é escolhido no calendário — ver buscarStatusPushRemuneradoNoDia. */
+    colunaRotina:        "rotina",
+    colunaRotinaSucesso: "rotina_sucesso",
     nome:         "Push Remunerado",
+    link:         "https://pushremunerados.vercel.app/",
   },
 
   /* ───────────────────────── ROBÔ 4 (robo4) ─────────────────────────
@@ -1415,6 +1731,7 @@ var ROBOS = [
     colunaData:   "",   // <-- FALTA PREENCHER
     colunaStatus: "",   // <-- FALTA PREENCHER
     nome:         "Vigência",
+    link:         "https://vigenciacolegiados-7oj5.onrender.com/",
   },
 
 ];
@@ -1439,6 +1756,12 @@ var ROBOT_MODES = [robo1, robo2, robo3, robo4];
 
 var robots = [];
 var desks = [];
+var robotClickTargets = []; /* invisible hitboxes, one per robot, used to open its dashboard link on click */
+var representacoesHojeCount = 0; /* quantas representações o Radar Colegiados (robo1) achou hoje — mostrado no painel central */
+var representacoesHojeLista = []; /* os itens crus (Documento + PDF) daquele dia — mostrados no modal "ler representações" */
+var pushDiretoraCount = 0; /* valor da coluna push_count do Push Diretora (robo2) hoje — mostrado no painel central */
+var SMOKE_COUNT = 10; /* puff sprites per robot's error-mode monitor smoke plume */
+var SMOKE_LIFE = 2.4;  /* seconds for one puff to rise, grow and fade out */
 
 positions.forEach(function(p, i){
   var platformZ = p[1] - 0.2;
@@ -1466,6 +1789,18 @@ positions.forEach(function(p, i){
   robotObj.group.add(nameTag);
   robotObj.nameTag = nameTag;
 
+  /* invisible click/hover hitbox covering the whole robot, used to open its dashboard link */
+  robotObj.link = ROBOS[i].link || '';
+  var clickHitbox = new THREE.Mesh(
+    new THREE.BoxGeometry(0.6, 1.6, 0.6),
+    new THREE.MeshBasicMaterial({ transparent:true, opacity:0, depthWrite:false })
+  );
+  clickHitbox.position.y = 0.8;
+  clickHitbox.userData.robotIndex = i;
+  robotObj.group.add(clickHitbox);
+  robotObj.clickHitbox = clickHitbox;
+  robotClickTargets.push(clickHitbox);
+
   /* coffee-drinking behaviour: pick the arm on the same side as this desk's cup */
   var drinkSide = (p[0] > 0) ? -1 : 1; /* matches mirrorCup logic in buildDesk */
   robotObj.drinkArm = (drinkSide === -1) ? robotObj.armL : robotObj.armR;
@@ -1489,6 +1824,30 @@ positions.forEach(function(p, i){
   floorPuddle.visible = false;
   room.add(floorPuddle);
   robotObj.floorPuddle = floorPuddle;
+
+  /* big, chunky smoke plume billowing off the monitor for the 'errormode' mode —
+     a pool of puff sprites recycled every frame (see updateSmoke below), attached
+     to the desk group so it stays anchored right over the screen. */
+  robotObj.smoke = [];
+  for (var s = 0; s < SMOKE_COUNT; s++){
+    var puffMat = new THREE.SpriteMaterial({ map:smokeTex.texture, transparent:true, depthWrite:false, opacity:0 });
+    var puff = new THREE.Sprite(puffMat);
+    puff.position.set(0, 1.32, -0.26);
+    puff.scale.set(0.01, 0.01, 1);
+    puff.visible = false;
+    deskObj.group.add(puff);
+    robotObj.smoke.push({
+      sprite:   puff,
+      seed:     (s / SMOKE_COUNT) * SMOKE_LIFE + i * 0.37, /* staggers puffs evenly along the life cycle */
+      sizeMul:  0.8 + Math.random()*0.7,
+      driftX:   (Math.random()*2 - 1) * 0.22,
+      driftFreq: 1.3 + Math.random()*1.6
+    });
+  }
+  var smokeGlow = new THREE.PointLight(0xff3b30, 0, 1.6, 2);
+  smokeGlow.position.set(0, 1.32, -0.26);
+  deskObj.group.add(smokeGlow);
+  robotObj.smokeGlow = smokeGlow;
 
   robotObj.drinking = false;
   robotObj.drinkStart = 0;
@@ -1517,11 +1876,32 @@ positions.forEach(function(p, i){
   robotObj.lamp = lamp;
 });
 
+/* ── SEÇÃO 9 — Busca no Supabase, decide o modo de cada robô, e a barra
+   "AO VIVO" / escolher um dia ────────────────────────────────────────────
+   `atualizarEstadoDoPainel(dataISO, agoraParaModos)` é a função central:
+   busca o status + os números do dia em cada Supabase de `ROBOS[]` e
+   aplica em `robots[].mode` e nas variáveis do painel (representacoes-
+   HojeCount etc.). Ela roda de dois jeitos, controlados pelas funções
+   `irParaAoVivo()`/`irParaDia()` mais abaixo:
+     • AO VIVO  → dataISO = hoje, hora real, refaz a busca a cada 1 min.
+     • Um dia escolhido na barra do topo → dataISO = aquele dia, e a hora
+       usada pra decidir "sem dado = erro ou ocioso" é sempre fixada em
+       12:00 daquele dia (não atualiza sozinho depois). ─────────────── */
 
 function hojeISO(){
   var d = new Date();
   var tz = d.getTimezoneOffset() * 60000;
   return new Date(d - tz).toISOString().slice(0, 10); // YYYY-MM-DD local
+}
+
+/* último dia que pode aparecer no calendário — hoje não é selecionável de propósito
+   (ver dbDayInput.max mais abaixo): ou é AO VIVO, ou é um dia já fechado/passado. */
+function ontemISO(){
+  var d = new Date();
+  var tz = d.getTimezoneOffset() * 60000;
+  var local = new Date(d - tz);
+  local.setDate(local.getDate() - 1);
+  return local.toISOString().slice(0, 10);
 }
 
 function statusParaModo(status, agora){
@@ -1532,23 +1912,75 @@ function statusParaModo(status, agora){
   return agora.getHours() >= 11 ? "errormode" : "idlemode";
 }
 
-async function buscarStatus(cfg){
+async function buscarStatus(cfg, dataISO){
   if (!cfg || !cfg.url || !cfg.anonKey) return null; // ligação ainda incompleta: pula sem dar erro
   try {
     var client = window.supabase.createClient(cfg.url, cfg.anonKey);
     var resp = await client
       .from(cfg.tabela)
       .select(cfg.colunaStatus)
-      .eq(cfg.colunaData, hojeISO())
+      .eq(cfg.colunaData, dataISO)
       .maybeSingle();
     if (resp.error){ console.error("Erro Supabase:", resp.error); return null; }
     return resp.data ? resp.data[cfg.colunaStatus] : null;
   } catch(e){ console.error("Erro ao buscar status:", e); return null; }
 }
 
-async function atualizarModosDosRobos(){
-  var agora = new Date();
-  
+/* busca uma coluna qualquer do dia escolhido (filtrando por colunaData) — genérica,
+   usada tanto pra "linhas" (array JSON) quanto pra "push_count" (número) e outras que vierem depois. */
+async function buscarColunaDoDia(cfg, coluna, dataISO){
+  if (!cfg || !cfg.url || !cfg.anonKey || !coluna) return null; // ligação incompleta ou robô sem essa coluna: pula sem dar erro
+  try {
+    var client = window.supabase.createClient(cfg.url, cfg.anonKey);
+    var resp = await client
+      .from(cfg.tabela)
+      .select(coluna)
+      .eq(cfg.colunaData, dataISO)
+      .maybeSingle();
+    if (resp.error){ console.error("Erro Supabase (" + coluna + "):", resp.error); return null; }
+    return resp.data ? resp.data[coluna] : null;
+  } catch(e){ console.error("Erro ao buscar " + coluna + ":", e); return null; }
+}
+
+/* caso especial: SÓ o Push Remunerado grava 2 linhas por dia (colunaRotina = "manha" ou
+   "noite"), e essa checagem SÓ é usada quando um dia é escolhido no calendário (não ao
+   vivo). O dia só conta como certo se as DUAS rotinas existirem e as DUAS tiverem dado
+   certo (colunaRotinaSucesso = true); se qualquer uma faltar ou for false, é erro. */
+async function buscarStatusPushRemuneradoNoDia(cfg, dataISO){
+  if (!cfg || !cfg.url || !cfg.anonKey || !cfg.colunaRotina || !cfg.colunaRotinaSucesso) return null;
+  try {
+    var client = window.supabase.createClient(cfg.url, cfg.anonKey);
+    var resp = await client
+      .from(cfg.tabela)
+      .select(cfg.colunaRotina + ',' + cfg.colunaRotinaSucesso)
+      .eq(cfg.colunaData, dataISO);
+    if (resp.error){ console.error("Erro Supabase (rotina):", resp.error); return null; }
+
+    var linhas = resp.data || [];
+    var manha = linhas.find(function(l){ return l[cfg.colunaRotina] === 'manha'; });
+    var noite = linhas.find(function(l){ return l[cfg.colunaRotina] === 'noite'; });
+    var manhaOk = !!(manha && manha[cfg.colunaRotinaSucesso] === true);
+    var noiteOk = !!(noite && noite[cfg.colunaRotinaSucesso] === true);
+
+    return (manhaOk && noiteOk) ? 'ok' : 'erro';
+  } catch(e){ console.error("Erro ao buscar rotina do Push Remunerado:", e); return null; }
+}
+
+/* normaliza a coluna "linhas" (array JSON de representações encontradas) pra sempre virar um
+   array de verdade — vem string, já vem parseado pelo supabase-js, vem nulo, o que for.
+   Vai mudando dia a dia — pode vir com 0, 1, 2... representações, ou sem linha nenhuma pra hoje. */
+function parseRepresentacoes(linhas){
+  var arr = linhas;
+  if (typeof arr === 'string'){
+    try { arr = JSON.parse(arr); } catch(e){ return []; } // coluna veio como texto em vez de json/jsonb
+  }
+  return Array.isArray(arr) ? arr : [];
+}
+
+/* busca e aplica o estado de todos os robôs (+ os números do painel) pro dia `dataISO`.
+   `agoraParaModos` é o horário usado só pra decidir errormode/idlemode quando não tem
+   dado nenhum naquele dia — ao vivo é o horário real, num dia escolhido é sempre 12:00. */
+async function atualizarEstadoDoPainel(dataISO, agoraParaModos, diaEscolhido){
   for (var i = 0; i < robots.length; i++){
 
     // VIGENCIA SEMPRE TRABALHANDO - nao tem banco
@@ -1556,16 +1988,82 @@ async function atualizarModosDosRobos(){
       robots[i].mode = "workingmode";
       continue;
     }
-    
-    var status = await buscarStatus(ROBOS[i]);
-    robots[i].mode = statusParaModo(status, agora);
+
+    // caso especial: só o Push Remunerado (robo3/i===2), só quando um dia é escolhido no
+    // calendário — depende das DUAS rotinas (manhã e noite) daquele dia, não de 1 linha só
+    // (ver buscarStatusPushRemuneradoNoDia, logo acima). Ao vivo continua no caminho normal.
+    if (i === 2 && diaEscolhido && ROBOS[i].colunaRotina){
+      var resultado = await buscarStatusPushRemuneradoNoDia(ROBOS[i], dataISO);
+      robots[i].mode = resultado === 'ok' ? 'workingmode' : 'errormode';
+      robots[i].statusRaw = resultado;
+      continue;
+    }
+
+    var status = await buscarStatus(ROBOS[i], dataISO);
+    robots[i].mode = statusParaModo(status, agoraParaModos);
     robots[i].statusRaw = status; // guarda exatamente o que veio de colunaStatus
   }
+
+  var linhasDoDia = await buscarColunaDoDia(ROBOS[0], ROBOS[0].colunaLinhas, dataISO); // só o Radar Colegiados tem essa coluna
+  representacoesHojeLista = parseRepresentacoes(linhasDoDia);
+  representacoesHojeCount = representacoesHojeLista.length;
+
+  var pushCountDoDia = await buscarColunaDoDia(ROBOS[1], ROBOS[1].colunaPushCount, dataISO); // só o Push Diretora tem essa coluna
+  pushDiretoraCount = Number(pushCountDoDia) || 0;
 }
 
-atualizarModosDosRobos();
-setInterval(atualizarModosDosRobos, 60 * 1000); /* reconsulta a cada 1 min */
+/* ---------- barra de dia: AO VIVO (tempo real, atualiza a cada 1 min) x um dia escolhido
+   (sempre lido como se fossem 12:00 daquele dia, fixo, sem atualizar sozinho) ---------- */
+var modoAoVivo = true;
+var liveIntervalId = null;
+var dbDot = document.getElementById('dbDot');
+var dbBar = document.getElementById('dayBar');
+var dbBtnAoVivo = document.getElementById('dbBtnAoVivo');
+var dbDayInput = document.getElementById('dbDayInput');
+dbDayInput.max = ontemISO(); /* hoje não é selecionável: ou é AO VIVO, ou é um dia passado */
 
+function pararAtualizacaoAoVivo(){
+  if (liveIntervalId){ clearInterval(liveIntervalId); liveIntervalId = null; }
+}
+
+function atualizarUIBarraDeDia(){
+  dbBar.classList.toggle('hist', !modoAoVivo);
+  dbBtnAoVivo.classList.toggle('active', modoAoVivo);
+}
+
+function irParaAoVivo(){
+  modoAoVivo = true;
+  dbDayInput.value = '';
+  atualizarUIBarraDeDia();
+  pararAtualizacaoAoVivo();
+  atualizarEstadoDoPainel(hojeISO(), new Date());
+  liveIntervalId = setInterval(function(){
+    atualizarEstadoDoPainel(hojeISO(), new Date());
+  }, 60 * 1000);
+}
+
+function irParaDia(dataISO){
+  modoAoVivo = false;
+  atualizarUIBarraDeDia();
+  pararAtualizacaoAoVivo();
+  var agoraVirtual = new Date(dataISO + 'T12:00:00'); /* fixo: sempre como se fosse meio-dia daquele dia */
+  atualizarEstadoDoPainel(dataISO, agoraVirtual, true);
+}
+
+dbBtnAoVivo.addEventListener('click', irParaAoVivo);
+dbDayInput.addEventListener('change', function(){
+  if (!dbDayInput.value) return;
+  if (dbDayInput.value >= hojeISO()){ /* rede de segurança: alguns navegadores deixam digitar/colar passando do `max` */
+    dbDayInput.value = '';
+    irParaAoVivo();
+    return;
+  }
+  irParaDia(dbDayInput.value);
+});
+
+irParaAoVivo(); /* estado inicial: tempo real */
+
+/* ── SEÇÃO 10 — Decoração pequena: plantas, lixeiras ────────────────────── */
 /* small decor: a plant near back wall */
 function buildPlant(x,z){
   var g = new THREE.Group();
@@ -1603,9 +2101,71 @@ positions.forEach(function(p){
 
 buildTrashBin(6.55, -4.15);
 
+/* ── SEÇÃO 11 — Centro da sala: bolo de aniversário + pilar holográfico ──
+   O pilar (buildHoloPillar) é o centro de tudo: base + bolinha holográfica
+   que fica girando. O bolo (buildBirthdayCake) é montado UMA VEZ, junto
+   com o pilar, mas fica escondido (visible=false) até o easter egg do
+   "modo aniversário" (Seção 12) trocar a visibilidade — nunca é recriado,
+   então não custa nada enquanto está desligado. ─────────────────────── */
+
 // PILAR REDONDO NO MEIO
 /* rotating holographic pillar, centerpiece between the two robot rows */
-/* rotating holographic pillar, centerpiece between the two robot rows */
+/* giant birthday cake, built once and kept hidden — swapped in for the hologram ball during
+   "modo aniversário" (see the easter egg below) by toggling .visible, never rebuilt, so it
+   costs nothing while off. Candles flicker only while the cake itself is visible. */
+function buildBirthdayCake(){
+  var cg = new THREE.Group();
+  cg.visible = false;
+
+  var tiersDef = [
+    { r:0.95, h:0.5,  color:0xffb3c6 },
+    { r:0.68, h:0.42, color:0xfff0c9 },
+    { r:0.42, h:0.36, color:0xffffff }
+  ];
+  var y = 0.05, topY = y;
+  tiersDef.forEach(function(td){
+    var tier = new THREE.Mesh(
+      new THREE.CylinderGeometry(td.r, td.r*1.05, td.h, 22),
+      new THREE.MeshStandardMaterial({ color:td.color, roughness:0.55, metalness:0.05 })
+    );
+    tier.position.y = y + td.h/2;
+    tier.castShadow = true;
+    cg.add(tier);
+    var lip = new THREE.Mesh(
+      new THREE.TorusGeometry(td.r, 0.035, 8, 20),
+      new THREE.MeshStandardMaterial({ color:0xffffff, roughness:0.4 })
+    );
+    lip.rotation.x = Math.PI/2;
+    lip.position.y = y + td.h;
+    cg.add(lip);
+    y += td.h;
+    topY = y;
+  });
+
+  var candleColors = [0xff5c8a,0x5cc8ff,0xffd23f,0x5cf28c,0xc05cff];
+  var candles = [];
+  var candleCount = 7;
+  for (var i=0; i<candleCount; i++){
+    var ang = (i/candleCount)*Math.PI*2;
+    var cx = Math.cos(ang)*0.22, cz = Math.sin(ang)*0.22;
+    var candle = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.02,0.02,0.22,8),
+      new THREE.MeshStandardMaterial({ color:candleColors[i%candleColors.length], roughness:0.4 })
+    );
+    candle.position.set(cx, topY+0.11, cz);
+    cg.add(candle);
+    var flame = new THREE.Mesh(
+      new THREE.ConeGeometry(0.025,0.06,8),
+      new THREE.MeshStandardMaterial({ color:0xffcf5c, emissive:0xff9a2e, emissiveIntensity:1.6 })
+    );
+    flame.position.set(cx, topY+0.25, cz);
+    cg.add(flame);
+    candles.push({ mesh:flame, seed:i*1.9 });
+  }
+
+  return { group:cg, candles:candles };
+}
+
 function buildHoloPillar(x,z){
   var g = new THREE.Group();
   var base = new THREE.Mesh(new THREE.CylinderGeometry(0.22,0.26,0.12,20), matJoint);
@@ -1622,14 +2182,34 @@ function buildHoloPillar(x,z){
   holoLight.position.y = 1.25;
   g.add(holoLight);
   /* bigger invisible sphere so the hover hitbox isn't limited to the thin wireframe facets */
-  var hoverTarget = new THREE.Mesh(new THREE.SphereGeometry(0.42,12,10), new THREE.MeshBasicMaterial({ transparent:true, opacity:0 }));
+  var hoverTarget = new THREE.Mesh(new THREE.SphereGeometry(0.42,12,10), new THREE.MeshBasicMaterial({ transparent:true, opacity:0, depthWrite:false }));
   hoverTarget.position.y = 1.25;
   g.add(hoverTarget);
+
+  var cake = buildBirthdayCake();
+  g.add(cake.group);
+
   g.position.set(x,0,z);
   room.add(g);
-  return { holo:holo, hoverTarget:hoverTarget };
+  return { holo:holo, holoLight:holoLight, hoverTarget:hoverTarget, cake:cake };
 }
 var holoPillar = buildHoloPillar(0, -0.45);
+
+/* ── SEÇÃO 12 — Interações de mouse ──────────────────────────────────────
+   Tudo aqui usa o MESMO truque: um THREE.Raycaster (`holoRaycaster`) pra
+   saber o que o mouse está tocando dentro da cena 3D, e — quando o alvo é
+   um elemento de HTML (o tooltip do holograma, o botão "ler representa-
+   ções") — a posição 3D de um objeto é projetada pra coordenada de tela
+   (`.project(camera)`) e usada como left/top do elemento, recalculado a
+   cada frame. Nesta seção:
+     • updateHoloHover()            → tooltip ao passar o mouse na bolinha
+     • updateLerRepresentacoesBtn() → posiciona o botão sobre o painel 3D
+     • abrirModalRepresentacoes()   → abre a lista de documentos do dia
+     • updateRobotHoverCursor() + o listener de click no <canvas>
+       → cursor de "pode clicar" e abre o link de cada robô
+     • registrarCliqueEasterEgg() + ativarModoAniversario() +
+       updateModoAniversario()     → o easter egg (2x bebedouro + 1x
+       impressora liga o "modo aniversário" por 10s) ─────────────────── */
 
 /* hover the hologram ball -> open a holographic readout panel below it, tech/HUD styled.
    The panel is anchored to the ball's own on-screen position (re-projected every frame,
@@ -1688,6 +2268,167 @@ function updateHoloHover(){
   holoTooltipEl.classList.add('visible');
 }
 
+/* "LER REPRESENTAÇÕES" button: pinned over the right side of the dashboard's row 0 (Push
+   Representações), reprojected every frame from the dashboard's own 3D plane onto the screen
+   — same trick as the hologram tooltip above, just reading a stat-row rect instead of a ball. */
+var btnLerRepresentacoesEl = document.getElementById('btnLerRepresentacoes');
+var __dashRowWorld = new THREE.Vector3();
+
+function updateLerRepresentacoesBtn(){
+  var rowRect = dashboardRowRects[0];
+  if (!rowRect){ btnLerRepresentacoesEl.classList.remove('visible'); return; }
+
+  var cw = dashTex.canvas.width, ch = dashTex.canvas.height;
+  var pw = windowMesh.geometry.parameters.width, ph = windowMesh.geometry.parameters.height;
+  var px = rowRect.x + rowRect.w - 260; /* reserva de largura pro próprio botão, sem estourar a linha */
+  var py = rowRect.y + rowRect.h/2;
+  var localX = (px/cw - 0.5) * pw;
+  var localY = (0.5 - py/ch) * ph;
+  __dashRowWorld.set(windowMesh.position.x + localX, windowMesh.position.y + localY, windowMesh.position.z);
+  __dashRowWorld.project(camera);
+
+  var rect = canvas.getBoundingClientRect();
+  btnLerRepresentacoesEl.style.left = ((__dashRowWorld.x*0.5+0.5) * rect.width) + 'px';
+  btnLerRepresentacoesEl.style.top  = ((1-(__dashRowWorld.y*0.5+0.5)) * rect.height) + 'px';
+  btnLerRepresentacoesEl.classList.add('visible');
+}
+
+/* modal listando as representações do dia (Documento + link do PDF, clicável) */
+var repModalEl = document.getElementById('repModal');
+var rmBodyEl = document.getElementById('rmBody');
+var rmDateEl = document.getElementById('rmDate');
+
+function abrirModalRepresentacoes(){
+  rmDateEl.textContent = dbDayInput.value || hojeISO();
+
+  if (!representacoesHojeLista.length){
+    rmBodyEl.innerHTML = '<div class="rmEmpty">NENHUMA REPRESENTAÇÃO ENCONTRADA NESSE DIA</div>';
+  } else {
+    rmBodyEl.innerHTML = representacoesHojeLista.map(function(item){
+      var nome = (item && item.Documento) ? String(item.Documento) : '(sem nome)';
+      var link = item && item.PDF;
+      if (link){
+        return '<a class="rmRow" href="' + link.replace(/"/g,'&quot;') + '" target="_blank" rel="noopener">' +
+          '<div class="rmRowTitle">' + nome.replace(/</g,'&lt;') + '</div>' +
+          '<div class="rmRowMeta">' + link.replace(/</g,'&lt;') + '</div></a>';
+      }
+      return '<div class="rmRow"><div class="rmRowTitle">' + nome.replace(/</g,'&lt;') + '</div>' +
+        '<div class="rmRowMeta">sem link</div></div>';
+    }).join('');
+  }
+
+  repModalEl.classList.add('show');
+}
+
+btnLerRepresentacoesEl.addEventListener('click', abrirModalRepresentacoes);
+document.getElementById('rmCloseBtn').addEventListener('click', function(){ repModalEl.classList.remove('show'); });
+repModalEl.addEventListener('click', function(e){ if (e.target === repModalEl) repModalEl.classList.remove('show'); });
+
+/* click a robot -> open its dashboard link in a new tab.
+   Reuses the same mouse-NDC tracking as the hologram hover above. Cursor turns
+   into a pointer while hovering a robot with a link, as a click affordance. */
+function updateRobotHoverCursor(){
+  holoRaycaster.setFromCamera(holoMouseNDC, camera);
+  var hit = holoRaycaster.intersectObjects(robotClickTargets, false);
+  canvas.style.cursor = (hit.length > 0 && robots[hit[0].object.userData.robotIndex].link) ? 'pointer' : '';
+}
+
+canvas.addEventListener('click', function(e){
+  var rect = canvas.getBoundingClientRect();
+  var ndc = new THREE.Vector2(
+    ((e.clientX-rect.left)/rect.width)*2 - 1,
+    -((e.clientY-rect.top)/rect.height)*2 + 1
+  );
+  holoRaycaster.setFromCamera(ndc, camera);
+
+  var hit = holoRaycaster.intersectObjects(robotClickTargets, false);
+  if (hit.length > 0){
+    var robot = robots[hit[0].object.userData.robotIndex];
+    if (robot && robot.link) window.open(robot.link, '_blank', 'noopener');
+    return;
+  }
+
+  var eggHit = holoRaycaster.intersectObjects(easterEggClickTargets, false);
+  if (eggHit.length > 0) registrarCliqueEasterEgg(eggHit[0].object.userData.easterEgg);
+});
+
+/* ---------- easter egg: 2 cliques no bebedouro + 1 na impressora, nessa ordem, liga o
+   "modo aniversário" — luzes coloridas piscando por 10 segundos. Um intervalo grande
+   demais entre cliques (2.5s) reseta a combinação. ---------- */
+var easterEggSequence = [];
+var easterEggLastClickT = -999;
+var EASTER_EGG_COMBO = ['bebedouro','bebedouro','impressora'];
+
+function registrarCliqueEasterEgg(tag){
+  var t = clock.getElapsedTime();
+  if (t - easterEggLastClickT > 2.5) easterEggSequence = []; /* combo esfriou, começa de novo */
+  easterEggLastClickT = t;
+
+  easterEggSequence.push(tag);
+  if (easterEggSequence.length > EASTER_EGG_COMBO.length) easterEggSequence.shift();
+
+  var bateu = easterEggSequence.length === EASTER_EGG_COMBO.length &&
+    easterEggSequence.every(function(v, i){ return v === EASTER_EGG_COMBO[i]; });
+  if (bateu){
+    ativarModoAniversario();
+    easterEggSequence = [];
+  }
+}
+
+/* luzes de festa: desligadas (visible=false, não só intensity=0 — uma PointLight visível é
+   processada no shader de TODO objeto iluminado da cena a cada frame, mesmo com intensidade
+   zero, então deixá-las "ligadas porém apagadas" pesava a cena inteira o tempo todo).
+   Só ficam visible=true durante os 10s do modo aniversário. */
+var partyLights = (function(){
+  var posicoes = [[-5,3.1,-3],[5,3.1,-3],[-5,3.1,2],[5,3.1,2],[0,3.3,-4],[0,3.3,3]];
+  return posicoes.map(function(p, i){
+    var l = new THREE.PointLight(0xffffff, 0, 7, 2);
+    l.position.set(p[0], p[1], p[2]);
+    l.visible = false;
+    room.add(l);
+    return { light:l, phase:i*1.7 };
+  });
+})();
+var birthdayBannerEl = document.getElementById('birthdayBanner');
+var aniversarioAteT = -1; /* clock time até quando o modo aniversário fica ligado */
+
+function ativarModoAniversario(){
+  aniversarioAteT = clock.getElapsedTime() + 10;
+  birthdayBannerEl.classList.add('show');
+  partyLights.forEach(function(pl){ pl.light.visible = true; });
+  /* a bolinha holográfica vira um bolo gigante — troca só visibilidade, nada é recriado */
+  holoPillar.holo.visible = false;
+  holoPillar.holoLight.visible = false;
+  holoPillar.cake.group.visible = true;
+}
+
+function updateModoAniversario(t){
+  var ativo = t < aniversarioAteT;
+  if (!ativo){
+    if (aniversarioAteT >= 0){ /* acabou de desligar: apaga tudo uma vez só */
+      partyLights.forEach(function(pl){ pl.light.intensity = 0; pl.light.visible = false; });
+      birthdayBannerEl.classList.remove('show');
+      holoPillar.holo.visible = true;
+      holoPillar.holoLight.visible = true;
+      holoPillar.cake.group.visible = false;
+      robots.forEach(function(r){ r.hips.rotation.z = 0; }); /* só a dança mexe nesse eixo — zera pra não ficar torto */
+      aniversarioAteT = -1;
+    }
+    return;
+  }
+  holoPillar.cake.candles.forEach(function(c){
+    c.mesh.material.emissiveIntensity = 1.2 + Math.sin(t*20 + c.seed*5)*0.7; /* velas tremeluzindo */
+    var s = 0.85 + Math.sin(t*15 + c.seed*3)*0.15;
+    c.mesh.scale.set(s, 1, s);
+  });
+  partyLights.forEach(function(pl){
+    var hue = (t*0.8 + pl.phase*0.16) % 1;
+    pl.light.color.setHSL(hue, 1, 0.55);
+    pl.light.intensity = Math.max(0, 4.5 + Math.sin(t*16 + pl.phase*4)*4); /* piscando rápido */
+  });
+}
+
+/* ── SEÇÃO 13 — Câmera fixa (visão do "gestor") ─────────────────────────── */
 /* ---------- fixed supervisor overview camera ---------- */
 /* Keeps all 4 desks in frame at once, like a manager watching the room.
    Adaptive FOV recalculates on resize so the row of robots always fits,
@@ -1719,6 +2460,14 @@ function updateCamera(t){
   camera.lookAt(look[0],look[1],look[2]);
 }
 
+/* ── SEÇÃO 14 — Animação dos robôs ───────────────────────────────────────
+   Nesta ordem: vetores/quaternions reaproveitados a cada frame (pra não
+   alocar objeto novo 60x/s), a IK de 2 ossos do braço (ikAimArmAt — usada
+   tanto pra pegar o café quanto pro "mãos na cabeça" do errormode),
+   impressora/triturador, e por fim os 4 modos de comportamento de cada
+   robô (modeWorking/modeIdle/modeSleeping/modeError — troque `r.mode`
+   pra mudar o que um robô está fazendo, ver Seção 8/9), a fumaça de
+   erro (updateSmoke) e a dança do easter egg (updateDanca). ──────────── */
 /* ---------- animation loop ---------- */
 var clock = new THREE.Clock();
 var frame = 0;
@@ -2017,6 +2766,77 @@ function modeError(r, t){
   r.floorPuddle.visible = true;
 }
 
+/* big, chunky smoke plume billowing off the monitor while a robot is in 'errormode'.
+   Runs every frame for every robot (not just error ones) so puffs already in flight
+   fade out smoothly instead of vanishing the instant the mode changes. */
+function updateSmoke(r, t){
+  var active = r.mode === 'errormode';
+  r.smoke.forEach(function(p){
+    var spr = p.sprite;
+    if (active){
+      var lt = ((t + p.seed) % SMOKE_LIFE) / SMOKE_LIFE; /* 0 = just born at the screen, 1 = fully dissipated */
+      var y = 1.32 + lt*2.1;
+      var sway = Math.sin(t*p.driftFreq + p.seed*2.1) * (0.05 + lt*0.28);
+      spr.position.set(p.driftX*0.4 + sway, y, -0.26 + Math.sin(t*1.7+p.seed)*0.04);
+      var scale = (0.12 + lt*1.75) * p.sizeMul;
+      spr.scale.set(scale, scale, 1);
+      spr.material.rotation = p.seed*3 + t*0.5;
+      var fadeIn  = Math.min(1, lt/0.12);
+      var fadeOut = 1 - Math.max(0, (lt-0.55)/0.45);
+      spr.material.opacity = Math.max(0, fadeIn*fadeOut) * 0.92;
+      spr.visible = spr.material.opacity > 0.01;
+    } else if (spr.visible){
+      spr.material.opacity = Math.max(0, spr.material.opacity - 0.06);
+      spr.visible = spr.material.opacity > 0.01;
+    }
+  });
+  if (r.smokeGlow){
+    var targetIntensity = active ? (1.0 + Math.random()*0.6) : 0;
+    r.smokeGlow.intensity += (targetIntensity - r.smokeGlow.intensity) * (active ? 0.35 : 0.12);
+    if (r.smokeGlow.intensity < 0.02) r.smokeGlow.intensity = 0;
+  }
+}
+
+/* dança do "modo aniversário": só toma conta da POSE por cima do que já existe, sem tocar em
+   r.mode — o status real (working/idle/sleeping/error) continua intacto por baixo e volta a
+   valer sozinho assim que os 10s acabam (é o `animate()` que decide, frame a frame, se chama
+   isso ou o handler normal do modo). O único eixo que nenhum modo normal zera sozinho depois
+   (hips.rotation.z) é resetado explicitamente em updateModoAniversario ao desligar. */
+function updateDanca(r, t){
+  var ph = r.phase;
+  r.zzz.visible = false;
+  r.lamp.visible = true;
+  r.lamp.color.setHex(LAMP_COLOR_NORMAL);
+  r.ledMat.color.setHex(LED_COLOR_NORMAL);
+  r.ledMat.emissive.setHex(LED_COLOR_NORMAL);
+  r.deskStain.visible = false;
+  r.deskDrip.visible = false;
+  r.floorPuddle.visible = false;
+  r.cup.position.copy(r.cupBasePos);
+  r.cup.rotation.copy(r.cupBaseRot);
+
+  var bounce = Math.abs(Math.sin(t*6 + ph*2)) * 0.1;
+  var sway   = Math.sin(t*3 + ph*1.7) * 0.08;
+  r.hips.position.set(sway, 0.85 + bounce, 0);
+  r.hips.rotation.x = 0;
+  r.hips.rotation.z = Math.sin(t*3 + ph*1.7) * 0.14;
+
+  var wave = Math.sin(t*5 + ph);
+  r.armL.rotation.set(-2.1 + wave*0.3, 0,  0.6 + Math.sin(t*4+ph)*0.35);
+  r.armR.rotation.set(-2.1 - wave*0.3, 0, -0.6 - Math.sin(t*4+ph+Math.PI)*0.35);
+  r.armL.elbowGroup.rotation.x = -0.3;
+  r.armR.elbowGroup.rotation.x = -0.3;
+
+  r.headPivot.rotation.set(-0.05 + Math.sin(t*6+ph)*0.12, Math.sin(t*4+ph)*0.35, 0);
+  r.chestLight.material.emissiveIntensity = 1.1 + Math.sin(t*8+ph)*0.5;
+}
+
+/* ── SEÇÃO 15 — Loop principal ────────────────────────────────────────────
+   `animate()` roda a cada frame (requestAnimationFrame) e é basicamente
+   uma lista de "atualiza isso, atualiza aquilo" chamando as funções de
+   update de cada sistema descrito nas seções anteriores. Se algo devia
+   se mexer/atualizar e não está, o primeiro lugar pra olhar é aqui —
+   confira se a função de update dele está sendo chamada. ────────────── */
 var ROBOT_MODE_HANDLERS = {
   workingmode: modeWorking,
   idlemode: modeIdle,
@@ -2029,22 +2849,30 @@ function animate(){
   var t = clock.getElapsedTime();
   frame++;
 
+  var aniversarioAtivo = t < aniversarioAteT;
+
   robots.forEach(function(r){
-    var handler = ROBOT_MODE_HANDLERS[r.mode] || modeWorking;
-    handler(r, t);
+    if (aniversarioAtivo){
+      updateDanca(r, t);
+    } else {
+      var handler = ROBOT_MODE_HANDLERS[r.mode] || modeWorking;
+      handler(r, t);
+    }
+    updateSmoke(r, t);
 
     /* keep the little name tag on the opposite side of the desk */
     r.headPivot.getWorldPosition(__nameTagHeadWorld);
 
+    var isSleepingPose = r.mode === 'sleepingmode' && !aniversarioAtivo; /* dançando, ninguém tá com a cabeça na mesa */
     var sideOffset;
 
-    if (r.mode === 'sleepingmode') {
+    if (isSleepingPose) {
       sideOffset = r.group.position.x < 0 ? 1 : -1;
     } else {
       sideOffset = r.group.position.x < 0 ? 0.9 : -0.9;
     }
 
-    var heightOffset = r.mode === 'sleepingmode' ? 0.2 : -0.4;
+    var heightOffset = isSleepingPose ? 0.2 : -0.4;
 
     r.nameTag.position.set(
       __nameTagHeadWorld.x - r.group.position.x + sideOffset,
@@ -2070,8 +2898,17 @@ function animate(){
 
   updateCamera(t);
   updateHoloHover();
+  updateRobotHoverCursor();
+  updateLerRepresentacoesBtn();
+  updateModoAniversario(t);
   renderer.render(scene, camera);
 }
+
+/* ── SEÇÃO 16 — Inicialização final ──────────────────────────────────────
+   Desenha o 1º frame de propósito antes do loop começar (senão a tela
+   fica preta por um instante), depois esconde a tela de "carregando a
+   sala" com um fade e liga o animate(). Por fim, o listener de resize
+   mantém a câmera/renderer do tamanho certo se a janela mudar. ───────── */
 
 /* first paint */
 updateCamera(0);
