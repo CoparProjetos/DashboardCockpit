@@ -1910,7 +1910,7 @@ function statusParaModo(status, agora){
   if (s === "enviado") return "workingmode";
   if (s === "pendente") return "sleepingmode";
   // sem dado hoje: depois das 11h vira error, antes das 11h fica idle (parado, aguardando)
-  return agora.getHours() >= 11 ? "errormode" : "idlemode";
+  return agora.getHours() >= 9 ? "errormode" : "idlemode";
 }
 
 async function buscarStatus(cfg, dataISO){
